@@ -1,55 +1,45 @@
+# Use your existing Ruby version
 ARG RUBY_VERSION
 FROM ruby:$RUBY_VERSION-slim-buster
 
-ARG PG_VERSION
-ARG MYSQL_VERSION
+# System dependencies
 ARG NODE_VERSION
 ARG BUNDLER_VERSION
 
-RUN apt-get update -qq \
-  && DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-    build-essential \
-    gnupg2 \
-    curl \
-    git \
-    imagemagick \
-    libmariadb-dev \
-    sqlite3 \
-    libsqlite3-dev \
-    chromium \
-    libvips \
-    chromium-driver \
-  && rm -rf /var/cache/apt/lists/*
-
-RUN curl -sSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
-  && echo 'deb http://apt.postgresql.org/pub/repos/apt/ buster-pgdg main' $PG_VERSION > /etc/apt/sources.list.d/pgdg.list
-
-RUN curl -sSL https://deb.nodesource.com/setup_$NODE_VERSION.x | bash -
-
-RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get -yq dist-upgrade && \
-  DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-    libpq-dev \
-    postgresql-client-$PG_VERSION \
-    default-mysql-client \
-    nodejs \
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
+    build-essential curl git nodejs npm postgresql-client default-mysql-client \
+    libsqlite3-dev chromium chromium-driver libvips imagemagick sqlite3 \
   && rm -rf /var/lib/apt/lists/*
 
-ENV APP_USER=solidus_starter_frontend_user \
-    LANG=C.UTF-8 \
-    BUNDLE_JOBS=4 \
-    BUNDLE_RETRY=3
-ENV GEM_HOME=/home/$APP_USER/gems
+# User setup
+ENV APP_USER=solidus_starter_frontend_user
 ENV APP_HOME=/home/$APP_USER/app
+ENV GEM_HOME=/home/$APP_USER/gems
 ENV PATH=$PATH:$GEM_HOME/bin
 
 RUN useradd -ms /bin/bash $APP_USER
-
-RUN gem update --system \
-  && gem install bundler:$BUNDLER_VERSION \
-  && chown -R $APP_USER:$(id -g $APP_USER) /home/$APP_USER/gems
-
+RUN gem update --system && gem install bundler:$BUNDLER_VERSION
 USER $APP_USER
 
-RUN mkdir -p /home/$APP_USER/history
+WORKDIR $APP_HOME
 
-WORKDIR /home/$APP_USER/app
+# Copy app and install gems
+COPY --chown=$APP_USER:$APP_USER Gemfile Gemfile.lock ./
+RUN bundle install --without development test
+
+COPY --chown=$APP_USER:$APP_USER . ./
+
+# Install JS dependencies if using jsbundling/webpacker
+RUN if [ -f package.json ]; then npm install; fi
+
+# Precompile assets if Rails asset pipeline exists
+RUN if bundle exec rake -T | grep -q assets:precompile; then \
+      RAILS_ENV=production bundle exec rake assets:precompile; \
+    else \
+      echo "No assets to precompile"; \
+    fi
+
+EXPOSE 3000
+
+# Run Puma
+CMD ["bundle", "exec", "puma", "-C", "config/puma.rb"]
